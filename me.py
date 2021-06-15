@@ -7,6 +7,7 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 from time import time
 from typing import Any, NamedTuple, Union
 
+import aiohttp
 import click
 from aioprometheus import Gauge, Service
 
@@ -35,9 +36,23 @@ def _handle_debug(
     return debug
 
 
-async def check_http_endpoint(url: str) -> MifiStats:
-    # start_time = time()
-    return MifiStats(1, 69, 200)
+def calc_runtime_ms(start_time: float) -> float:
+    return (time() - start_time) * 1000
+
+
+async def check_http_endpoint(url: str, interval: float) -> MifiStats:
+    start_time = time()
+    timeout = aiohttp.ClientTimeout(total=(interval / 2))
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                return MifiStats(1, calc_runtime_ms(start_time), resp.status)
+    except aiohttp.ClientError as ce:
+        LOG.error(f"Unable to connect to {url}: {ce}")
+    except asyncio.TimeoutError:
+        LOG.error(f"Timed out trying to connect to {url}")
+
+    return MifiStats(0, calc_runtime_ms(start_time), 500)
 
 
 async def update_prom_stats(
@@ -68,12 +83,13 @@ async def update_prom_stats(
     while True:
         LOG.info(f"Starting a check of {mifi_url}")
         collect_start_time = time()
-        current_metrics = await check_http_endpoint(mifi_url)
+        current_metrics = await check_http_endpoint(mifi_url, interval)
         for k, gauge in prom_gauges.items():
             gauge.set({"mifi_ip": mifi_ip.compressed}, getattr(current_metrics, k))
 
-        collect_time_ms = (collect_start_time - time()) * 1000
-        LOG.info(f"Finished collecting {len(prom_gauges)} metrics in {collect_time_ms}")
+        LOG.debug(f"Current Metrics for {mifi_url}: {current_metrics}")
+        collect_time = time() - collect_start_time
+        LOG.info(f"Finished collecting {len(prom_gauges)} metrics in {collect_time}s")
         await asyncio.sleep(interval)
 
 
