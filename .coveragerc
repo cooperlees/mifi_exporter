@@ -1,0 +1,6 @@
+[run]
+source =
+    me
+
+[report]
+precision = 2
